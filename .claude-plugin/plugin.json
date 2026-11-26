@@ -1,0 +1,7 @@
+{
+  "name": "lowtoken",
+  "version": "0.1.0",
+  "description": "Shrinks tool output before Claude reads it: verified-lossless folding and session-wide deduplication of text already in context. Every rewrite decodes back to the original or is skipped.",
+  "license": "MIT",
+  "keywords": ["tokens", "context", "cost", "prompt-cache", "compression"]
+}

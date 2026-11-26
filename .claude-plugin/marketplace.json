@@ -1,0 +1,14 @@
+{
+  "name": "lowtoken",
+  "owner": { "name": "lowtoken" },
+  "metadata": {
+    "description": "Exact Claude token accounting and verified-lossless context compression for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "lowtoken",
+      "source": "./",
+      "description": "Shrinks tool output before Claude reads it: verified-lossless folding and transcript-checked deduplication of text Claude already has."
+    }
+  ]
+}
