@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lowtoken"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pay less rent on your LLM context: exact Claude token accounting and verified-lossless context compression for Claude Code."
 readme = "README.md"
 requires-python = ">=3.9"
