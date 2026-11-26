@@ -69,6 +69,30 @@ a summary and re-caches a smaller context, after which every call reads less. It
   tool set changed mid-session, 3.0M after a `/model` switch.
 * 177 single tool results over 8k tokens; the worst was read 222 times.
 
+### Keeping the cache warm: a ski-rental problem, decided by your own data
+
+When you step away, the prompt cache expires (after 1 hour on a subscription, 5 minutes on 5m
+writes) and your next message re-writes the whole context at twice the input price. A *keeper*
+re-sends the last request just before expiry; each re-send costs one cache read, 1/40 of a
+re-write on Opus 5.5. Pay a little now or a lot later, without knowing whether you will come back:
+the ski-rental problem. Its textbook answer (keep paying until the pings cost as much as one
+re-write: 39 pings, 39 hours) is 2-competitive in the worst case. Two existing keepers stop after
+fixed counts of 20 and 40 pings.
+
+`audit` replays your idle gaps instead. A ping only pays where the next call really re-wrote the
+expired prefix (the usage shows it and the API names no other cause); sessions that never come
+back, and returns after `/clear`, compaction or a `/model` switch, only cost pings. On the data above:
+
+| at most N pings per gap | 1 | 2 | 4 | 8 | 20 | 40 |
+|---|---:|---:|---:|---:|---:|---:|
+| change in the bill | -1.36% | **-1.42%** | -1.27% | -0.88% | -0.33% | **+1.53%** |
+
+Expired caches cost 4.8% of the bill. Only 99 of 226 returns after the cache lifetime actually
+re-wrote it; 170 sessions never came back. The best cap here is two pings, keeping the cache about
+three hours, and chosen on half of the gaps and scored on the other half it still saves 1.05%. The
+textbook 40 would have raised the bill. `audit` reports the cap that fits your own gaps; lowtoken
+does not send pings itself.
+
 ### `diet` on the same machine
 
 Startup context was 44,500 tokens on every call. Components never used in 30 days, loaded anyway
@@ -212,6 +236,7 @@ Claude already has.
 | headroom | API proxy, JSON crushing, compress-cache-retrieve | OpenAI tokenizers | mixed |
 | token-optimizer | diff-only re-reads, archived outputs | chars / 4 | partly |
 | lean-ctx | context gateway; a stub replaces re-reads of files unchanged on disk | tiktoken o200k | for that stub, yes |
+| CacheBuddy, claude-cache-warm | keep the prompt cache warm while you are idle, for a fixed 40 or 20 pings | n/a | no content change |
 | TOON | compact data format | o200k | yes |
 | **lowtoken** | rent accounting + verified folding + transcript-checked dedup | **Claude's tokenizer, exact** | **yes, checked on every call** |
 

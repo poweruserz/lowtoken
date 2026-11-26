@@ -77,6 +77,17 @@ def cmd_audit(a) -> int:
         print("  a token added at call k is read again on average ...")
         for k, p, rem in r["lindy"]:
             print(f"    k={k:<4} {rem:7.0f} more calls   ({100 * p:.0f}% of sessions get this far)")
+    kw = r.get("keepwarm")
+    if kw:
+        bill = r["bill"] or 1
+        print("\nKEEPING THE CACHE WARM  (a keeper re-sends the last request just before the cache expires)")
+        print(f"  idle gaps that let the cache expire cost {_usd(kw['base'])} ({100 * kw['base'] / bill:.1f}% of the bill); "
+              f"{kw['expired']} returns, {kw['ends']} sessions that never came back")
+        for h, saved in kw["table"]:
+            print(f"    at most {h:>2} pings per gap: {'saves' if saved >= 0 else 'COSTS'} {_usd(abs(saved)):>9}"
+                  f"  ({100 * saved / bill:+.2f}% of the bill)")
+        print(f"  best for you: at most {kw['best']} pings ({100 * kw['best_saves'] / bill:+.2f}%); chosen on half of "
+              f"the gaps and scored on the other half it saves {100 * kw['held_out_saves'] / bill:+.2f}%")
     if r["findings"]:
         print("\nFINDINGS")
         for f in r["findings"]:

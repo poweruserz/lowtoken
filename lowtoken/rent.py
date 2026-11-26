@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import glob
 import json
+import math
 import os
 import re
 import time
@@ -301,6 +302,60 @@ def lindy(sessions: list[Session], ks=(1, 5, 10, 20, 50, 100, 200)) -> list[tupl
 _ECHO = re.compile(r'"(hook_event_name|session_id|transcript_path)"\s*:')
 
 
+def keepwarm(sessions: list[Session], max_pings: int = 60) -> dict | None:
+    """Would keeping the prompt cache warm through idle gaps pay, and for how long? (ski rental)
+
+    A keeper re-sends the last request every TTL - 60 s, at most H times per gap; each re-send costs
+    one cache read of the prefix. It pays only where the next call really re-wrote the expired prefix
+    (the usage shows it and the API names no other cause); session ends and gaps after /clear,
+    compaction or a model switch only cost pings. H is chosen on half of the gaps and scored on the
+    other half, so the saving is not fitted to the same data it is reported on."""
+    gaps = []   # (gap s, ttl, ping $, penalty $, really expired)
+    for s in sessions:
+        if os.sep + "subagents" + os.sep in s.path or "/subagents/" in s.path:
+            continue   # a subagent's context is never resumed
+        calls = [c for c in s.calls if c.get("ts")]
+        one_h = any((c["usage"].get("cache_creation") or {}).get("ephemeral_1h_input_tokens") for c in calls)
+        ttl, w = (3600, 2.0) if one_h else (300, 1.25)
+        for k, c in enumerate(calls):
+            i, _, r = prices.price(c["model"])
+            g, expired = math.inf, False
+            if k + 1 < len(calls):
+                n = calls[k + 1]
+                a, b = _ts(c["ts"]), _ts(n["ts"])
+                if not (a and b):
+                    continue
+                g = b - a
+                lost = (n["usage"].get("cache_creation_input_tokens") or 0) - max(0, n["ctx"] - c["ctx"])
+                expired = lost > 0.5 * c["ctx"] and (n.get("miss") or {}).get("type") in (
+                    None, "previous_message_not_found", "unavailable")
+            if g > ttl - 60:
+                gaps.append((g, ttl, c["ctx"] * r, c["ctx"] * (i * w - r), expired))
+    if not any(x[4] for x in gaps):
+        return None
+
+    def cost(h: int, rows) -> float:
+        total = 0.0
+        for g, ttl, ping, penalty, expired in rows:
+            t = ttl - 60
+            sent = h if g == math.inf else min(h, int(g // t))
+            warm = g != math.inf and (sent == int(g // t) or g <= sent * t + ttl)
+            total += sent * ping + (penalty if expired and not warm else 0.0)
+        return total
+
+    hs = range(max_pings + 1)
+    a_half, b_half = gaps[0::2], gaps[1::2]
+    h_a = min(hs, key=lambda h: cost(h, a_half))
+    h_b = min(hs, key=lambda h: cost(h, b_half))
+    held_out = (cost(0, b_half) - cost(h_a, b_half)) + (cost(0, a_half) - cost(h_b, a_half))
+    best = min(hs, key=lambda h: cost(h, gaps))
+    base = cost(0, gaps)
+    return {"base": base, "best": best, "best_saves": base - cost(best, gaps), "held_out_saves": held_out,
+            "table": [(h, base - cost(h, gaps)) for h in (1, 2, 4, 8, 20, 40) if h <= max_pings],
+            "ttl_1h_share": sum(x[1] == 3600 for x in gaps) / len(gaps),
+            "expired": sum(x[4] for x in gaps), "ends": sum(x[0] == math.inf for x in gaps)}
+
+
 def findings(sessions: list[Session]) -> list[dict]:
     """Concrete waste, each with the USD it cost in this period."""
     out = []
@@ -383,4 +438,4 @@ def summarize(sessions: list[Session]) -> dict:
     items = sorted((it for s in sessions for it in s.items if it.kind == "tool"), key=lambda i: -i.usd)[:10]
     return {"sessions": len(sessions), "calls": calls, "bill": bill, "by_kind": by_kind, "unpriced": unknown,
             "tokens_by_kind": tok_kind, "by_label": by_label, "top_items": items,
-            "lindy": lindy(sessions), "findings": findings(sessions)}
+            "lindy": lindy(sessions), "keepwarm": keepwarm(sessions), "findings": findings(sessions)}

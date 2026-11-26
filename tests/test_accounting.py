@@ -226,3 +226,25 @@ def test_diet_counts_short_command_names_as_use():
              diet.Component("skill", "frontend-design:frontend-design", "frontend-design", 40.0)]
     plan = diet.plan(comps, Counter({"skill:commit": 2, "skill:frontend-design": 1}), calls=100, sessions=2)
     assert plan == []   # used under their short names: nothing to switch off
+
+
+def test_keepwarm_pays_only_where_the_cache_really_expired():
+    def call(ts, ctx, wrote):
+        u = {"cache_read_input_tokens": ctx - wrote, "cache_creation_input_tokens": wrote, "input_tokens": 0,
+             "cache_creation": {"ephemeral_1h_input_tokens": wrote}}
+        return {"ts": ts, "ctx": ctx, "usage": u, "model": "claude-opus-5-5", "miss": None, "bill": 0.0}
+    s = rent.Session(path="x.jsonl")
+    s.calls = [call("2026-11-26T10:00:00Z", 100_000, 100_000),
+               call("2026-11-26T12:30:00Z", 101_000, 101_000)]     # back after 2.5 h: whole prefix re-written
+    i, _, r = prices.price("claude-opus-5-5")
+    kw = rent.keepwarm([s])
+    penalty = 100_000 * (2 * i - r)
+    assert kw["base"] == pytest.approx(penalty)
+    table = dict(kw["table"])
+    # one ping (at 59 min) keeps it to 1h59 only: still expired, and the session end wastes a ping too
+    assert table[1] == pytest.approx(-(100_000 * r + 101_000 * r))
+    # two pings bridge the 2.5 h gap; the session end costs two wasted pings
+    assert table[2] == pytest.approx(penalty - 2 * 100_000 * r - 2 * 101_000 * r)
+    assert kw["best"] == 2 and kw["expired"] == 1 and kw["ends"] == 1
+    s.calls[1]["miss"] = {"type": "model_changed"}                  # a /model switch: pings cannot help
+    assert rent.keepwarm([s]) is None
