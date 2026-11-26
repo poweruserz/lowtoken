@@ -86,6 +86,10 @@ def cmd_audit(a) -> int:
 
 def cmd_diet(a) -> int:
     from . import diet, rent
+    if a.undo:
+        keys = diet.undo()
+        print("switched back on: " + ", ".join(keys) if keys else "nothing to undo")
+        return 0
     md = diet.context_report(a.cwd)
     comps, cats = diet.components(md)
     paths = rent.transcripts(a.root, a.days, None)
@@ -117,7 +121,23 @@ def cmd_diet(a) -> int:
     for g in plan[: a.top]:
         print(f"  {_usd(g['usd']):>9}  {g['unused_tokens']:>7,.0f} tok  {g['group']}"
               f"  ({g['items']} items, {g['uses']} uses in total)")
-    print("\nDisable a plugin with /plugin, a claude.ai connector in claude.ai settings, an MCP server with /mcp.")
+    off = diet.removable(plan)
+    if off:
+        tok = sum(g["unused_tokens"] for _, g in off)
+        print(f"\nSAFE TO SWITCH OFF: {len(off)} plugins, {tok:,.0f} tokens per call. They only offer agents, skills")
+        print("and commands (no hooks, servers or styles), and none of them was used:")
+        for key, g in off:
+            print(f"  {_usd(g['usd']):>9}  {g['unused_tokens']:>7,.0f} tok  {key}")
+    for ev in diet.broken_hooks():
+        print(f"\nWARNING: your {ev} hook runs `cmd.exe /c ...`; under Git Bash it starts an interactive cmd that "
+              "echoes every hook input into the context. Write `cmd.exe //d //c ...`.")
+    if a.apply and off:
+        backup = diet.apply([k for k, _ in off])
+        print(f"\nSwitched off {len(off)} plugins (takes effect in new sessions). Backup: {backup}")
+        print("Undo with: lowtoken diet --undo")
+    elif off:
+        print("\nApply with: lowtoken diet --apply   (backs up settings.json; undo with --undo)")
+    print("\nOther components: /plugin for plugins, claude.ai settings for connectors, /mcp for MCP servers.")
     return 0
 
 
@@ -164,6 +184,56 @@ def compact_payback(ctx: int, startup: int, model: str | None) -> int | None:
     return max(1, round(once / ((ctx - after) * r)))
 
 
+def cache_state(transcript: str, model: str | None, now: float | None = None) -> str:
+    """How long the prompt cache stays warm, or what the next call pays once it went cold.
+
+    The cache lives 1 hour (5 minutes on 5m writes) after the last call. After that the next call
+    re-writes the whole context at 2x (1.25x) the input price instead of reading it at the cache
+    rate: on Opus 5.5 that is 40x the price of a warm call."""
+    import calendar
+    from . import prices
+    try:
+        with open(transcript, "rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - 400_000))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return ""
+    ts, ctx, ttl = None, 0, None
+    for line in reversed(lines):
+        if '"usage"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        u = (d.get("message") or {}).get("usage")
+        if not u:
+            continue
+        if ts is None:
+            ts, ctx = d.get("timestamp"), sum(u.get(k) or 0 for k in (
+                "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+        cc = u.get("cache_creation") or {}
+        if cc.get("ephemeral_1h_input_tokens"):
+            ttl = 3600
+        elif cc.get("ephemeral_5m_input_tokens"):
+            ttl = 300
+        if ttl:
+            break
+    if not ts or not ctx:
+        return ""
+    try:
+        last = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))  # transcript times are UTC
+    except ValueError:
+        return ""
+    ttl = ttl or 3600
+    left = ttl - ((now or time.time()) - last)
+    if left > 0:
+        return f"cache warm {int(left // 60)}m"
+    i, _, _ = prices.price(model)
+    return f"cache cold: next call re-writes ${ctx * i * (2.0 if ttl == 3600 else 1.25):.2f}"
+
+
 def cmd_statusline(a) -> int:
     """One status line: context size, what each call re-reads it for, and what lowtoken saved."""
     from . import dedup, prices
@@ -182,6 +252,9 @@ def cmd_statusline(a) -> int:
         n = compact_payback(ctx, _last_usage(d.get("transcript_path") or "", first=True)[0], model)
         if n is not None:
             parts.append(f"/compact pays back in {n} calls")
+    cache = cache_state(d.get("transcript_path") or "", model)
+    if cache:
+        parts.append(cache)
     saved = dedup.Store(d.get("session_id") or "default").saved if d.get("session_id") else 0
     if saved:
         parts.append(f"lowtoken -{saved / 1000:.1f}k tok")
@@ -263,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--cwd", help="project folder to measure (default: current)")
     s.add_argument("--root", help="transcript folder (default ~/.claude/projects)")
     s.add_argument("--top", type=int, default=15)
+    s.add_argument("--apply", action="store_true", help="switch off the unused passive plugins (backed up)")
+    s.add_argument("--undo", action="store_true", help="switch back on what --apply switched off")
     s.set_defaults(fn=cmd_diet)
 
     s = sub.add_parser("count", help="Claude token count of a file or stdin")

@@ -42,10 +42,15 @@ says otherwise.</sub>
 | Command | What it answers |
 |---|---|
 | `lowtoken audit` | Where did my money go? Exact bill from the API's own `usage` blocks, then every item that entered the context (each tool result, hook injection, the thinking, the startup context) charged its rent: one cache write plus every later re-read, until a compaction drops it. Ranks the most expensive single tool results and flags waste. |
-| `lowtoken diet` | What do I load on every call and never use? Exact per-agent, per-skill, per-MCP-server token cost (free, via `/context`) crossed with 30 days of real usage. |
+| `lowtoken diet` | What do I load on every call and never use? Exact per-agent, per-skill, per-MCP-server token cost (free, via `/context`) crossed with 30 days of real usage. `--apply` switches off the plugins that are safe to drop (backed up, `--undo` restores). |
 | hook (plugin) | Shrinks Bash, PowerShell, Read, Grep and MCP output before Claude reads it, losslessly (below). |
 | `lowtoken count --exact` | Exact Claude token count of any text, no API key, $0. |
-| `lowtoken statusline` | `ctx 300.0k · rent $0.060/call · next 100 calls $6.00 · /compact pays back in 14 calls · lowtoken -12.3k tok` (example, Opus 5.5 prices) |
+| `lowtoken statusline` | `ctx 300.0k · rent $0.060/call · next 100 calls $6.00 · /compact pays back in 14 calls · cache warm 37m · lowtoken -12.3k tok` (example, Opus 5.5 prices) |
+
+`cache warm 37m` counts down the prompt cache's lifetime (1 hour on a subscription, 5 minutes on 5m
+writes). Once it is cold, the next call re-writes the whole context at twice the input price instead of
+reading it at the cache rate, 40 times more on Opus 5.5, and the status line says what that will cost.
+Idle gaps caused most of the cache rebuilds measured above.
 
 The `/compact` payback is the break-even of the rent model: compacting reads the context once, writes
 a summary and re-caches a smaller context, after which every call reads less. It solves
@@ -76,6 +81,12 @@ Startup context was 44,500 tokens on every call. Components never used in 30 day
 | plugin C (7 agents) | 2,110 | 0 | 0.5% |
 | plugin D (11 agents and skills) | 1,329 | 0 | 0.3% |
 | **all unused components** | | | **4.2%** |
+
+`diet --apply` switches a plugin off only when every one of its agents, skills and commands went
+unused (short command names such as `/commit` count as use) and it offers nothing that acts on its
+own: no hooks, MCP or LSP servers, output styles or status lines. On this machine that was 12 plugins
+and 3,946 tokens on every call. It backs up `settings.json` first, and `--undo` switches back on
+exactly those plugins and nothing else.
 
 ## The hook: lossless by construction
 

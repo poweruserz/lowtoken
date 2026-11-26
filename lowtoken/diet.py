@@ -107,6 +107,116 @@ def usage(paths: list[str]) -> Counter:
     return used
 
 
+# A plugin with any of these does work outside Claude's own choices (hooks, servers, styles...):
+# switching it off could change behaviour even if Claude never invoked it, so diet never does.
+_ACTIVE_KEYS = {"hooks", "mcpServers", "lspServers", "outputStyles", "statusLine", "monitors"}
+_ACTIVE_FILES = ("hooks", ".mcp.json", ".lsp.json", "output-styles", "monitors")
+
+
+def passive(install_path: str) -> bool:
+    """True if the plugin only offers agents, skills and commands, which act only when invoked."""
+    try:
+        with open(os.path.join(install_path, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError):
+        return False  # unknown layout: not ours to switch off
+    if _ACTIVE_KEYS & set(manifest):
+        return False
+    return not any(os.path.exists(os.path.join(install_path, f)) for f in _ACTIVE_FILES)
+
+
+def _claude_home() -> str:
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def removable(groups: list[dict], home: str | None = None) -> list[tuple[str, dict]]:
+    """(enabledPlugins key, plan group) for enabled, passive plugins none of whose parts were used."""
+    home = home or _claude_home()
+    try:
+        with open(os.path.join(home, "settings.json"), encoding="utf-8") as fh:
+            enabled = json.load(fh).get("enabledPlugins") or {}
+        with open(os.path.join(home, "plugins", "installed_plugins.json"), encoding="utf-8") as fh:
+            installed = json.load(fh).get("plugins") or {}
+    except (OSError, ValueError):
+        return []
+    out = []
+    for g in groups:
+        if g["uses"] or g["unused_tokens"] < g["tokens"] or g["group"].startswith(("(", "mcp: ")):
+            continue
+        for key, on in enabled.items():
+            if on and key.split("@")[0] == g["group"]:
+                paths = [x.get("installPath") for x in installed.get(key) or [] if x.get("installPath")]
+                if paths and all(passive(p) for p in paths):
+                    out.append((key, g))
+    return out
+
+
+def _write_settings(path: str, settings: dict) -> None:
+    tmp = path + ".lowtoken.tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(settings, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+def apply(keys: list[str], home: str | None = None) -> str:
+    """Switch plugins off; returns the backup path. The list is kept so `undo` touches only these."""
+    import shutil
+    import time
+    home = home or _claude_home()
+    path = os.path.join(home, "settings.json")
+    backup = f"{path}.bak-lowtoken-diet-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(path, backup)
+    with open(path, encoding="utf-8") as fh:
+        settings = json.load(fh)
+    for k in keys:
+        settings.setdefault("enabledPlugins", {})[k] = False
+    _write_settings(path, settings)
+    from .dedup import state_dir
+    d = state_dir()
+    if d:
+        with open(os.path.join(d, "diet-applied.json"), "w", encoding="utf-8") as fh:
+            json.dump({"keys": keys, "backup": backup}, fh)
+    return backup
+
+
+def undo(home: str | None = None) -> list[str]:
+    """Switch back on exactly the plugins the last `apply` switched off."""
+    from .dedup import state_dir
+    home = home or _claude_home()
+    d = state_dir()
+    rec = os.path.join(d, "diet-applied.json") if d else ""
+    try:
+        with open(rec, encoding="utf-8") as fh:
+            keys = json.load(fh)["keys"]
+    except (OSError, ValueError, KeyError):
+        return []
+    path = os.path.join(home, "settings.json")
+    with open(path, encoding="utf-8") as fh:
+        settings = json.load(fh)
+    for k in keys:
+        settings.setdefault("enabledPlugins", {})[k] = True
+    _write_settings(path, settings)
+    os.remove(rec)
+    return keys
+
+
+def broken_hooks(home: str | None = None) -> list[str]:
+    """Hook events whose command starts cmd.exe with single-slash switches.
+
+    Claude Code runs hooks through Git Bash on Windows; there `/c` is rewritten into a path, so
+    cmd.exe starts interactively and echoes the hook's input into the context."""
+    if os.name != "nt":
+        return []
+    try:
+        with open(os.path.join(home or _claude_home(), "settings.json"), encoding="utf-8") as fh:
+            hooks = json.load(fh).get("hooks") or {}
+    except (OSError, ValueError):
+        return []
+    return sorted({ev for ev, groups in hooks.items() for g in groups for h in g.get("hooks") or []
+                   if re.match(r"^\s*cmd(\.exe)?\s+(/d\s+)?/c\s", h.get("command") or "", re.I)})
+
+
 def plan(comps: list[Component], used: Counter, calls: int, sessions: int, model: str | None = None) -> list[dict]:
     """Groups (plugins) whose components were never used, with what carrying them cost."""
     from . import prices
@@ -115,6 +225,10 @@ def plan(comps: list[Component], used: Counter, calls: int, sessions: int, model
     groups: dict[str, dict] = {}
     for c in comps:
         c.uses = used.get(f"{c.kind}:{c.name}", 0)
+        if ":" in c.name:  # also count "/commit" typed for "commit-commands:commit", or the plugin's own name
+            plugin, short = c.name.split(":", 1)
+            c.uses += used.get(f"{c.kind}:{short}", 0) + used.get(f"skill:{short}", 0) * (c.kind != "skill") \
+                + used.get(f"skill:{plugin}", 0)
         g = groups.setdefault(c.group, {"group": c.group, "tokens": 0.0, "uses": 0, "items": 0, "unused_tokens": 0.0})
         g["tokens"] += c.tokens
         g["uses"] += c.uses

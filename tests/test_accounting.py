@@ -1,4 +1,6 @@
 import json
+from collections import Counter
+import os
 
 import pytest
 
@@ -161,3 +163,66 @@ def test_partial_usage_lines_are_replaced_by_the_final_one(tmp_path):
     p.write_text(json.dumps(first) + "\n" + json.dumps(final) + "\n", encoding="utf-8")
     s = rent.parse(str(p))
     assert len(s.calls) == 1 and s.calls[0]["usage"]["output_tokens"] == 1093
+
+
+@pytest.fixture
+def claude_home(tmp_path, monkeypatch):
+    home = tmp_path / "claude"
+    (home / "plugins").mkdir(parents=True)
+    installed = {}
+    for name, files in [("tidy", ["agents/a.md"]), ("busy", ["agents/a.md", "hooks/hooks.json"]),
+                        ("used", ["skills/s/SKILL.md"])]:
+        root = tmp_path / "cache" / name
+        (root / ".claude-plugin").mkdir(parents=True)
+        (root / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": name}))
+        for f in files:
+            (root / f).parent.mkdir(parents=True, exist_ok=True)
+            (root / f).write_text("x")
+        installed[f"{name}@m"] = [{"installPath": str(root)}]
+    (home / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": installed}))
+    settings = {"enabledPlugins": {k: True for k in installed},
+                "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "cmd.exe /d /c set X=1&&echo"}]}]}}
+    (home / "settings.json").write_text(json.dumps(settings, indent=2))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    monkeypatch.setenv("LOWTOKEN_HOME", str(tmp_path / "state"))
+    return home
+
+
+def test_diet_switches_off_only_unused_passive_plugins_and_undoes(claude_home):
+    groups = [{"group": g, "uses": u, "tokens": 100.0, "unused_tokens": 100.0 if not u else 0.0, "items": 2, "usd": 1.0}
+              for g, u in [("tidy", 0), ("busy", 0), ("used", 3)]]
+    off = diet.removable(groups)
+    assert [k for k, _ in off] == ["tidy@m"]            # hooks keep "busy" on; "used" was used
+    backup = diet.apply([k for k, _ in off])
+    s = json.loads((claude_home / "settings.json").read_text())
+    assert s["enabledPlugins"] == {"tidy@m": False, "busy@m": True, "used@m": True}
+    assert os.path.exists(backup) and s["hooks"]          # nothing else in settings changed
+    assert diet.undo() == ["tidy@m"]
+    assert json.loads((claude_home / "settings.json").read_text())["enabledPlugins"]["tidy@m"] is True
+    assert diet.undo() == []                              # undo only once
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the Git Bash /c rewrite only happens on Windows")
+def test_diet_flags_cmd_hooks_that_git_bash_breaks(claude_home):
+    assert diet.broken_hooks() == ["Stop"]
+
+
+def test_statusline_cache_countdown_and_cold_cost(tmp_path):
+    import calendar
+    import time
+    from lowtoken.cli import cache_state
+    p = tmp_path / "t.jsonl"
+    line = _call("m1", 400_000, 1_000, 10)
+    line["timestamp"] = "2026-11-26T10:00:00Z"
+    p.write_text(json.dumps(line) + "\n", encoding="utf-8")
+    t0 = calendar.timegm(time.strptime("2026-11-26T10:00:00", "%Y-%m-%dT%H:%M:%S"))
+    assert cache_state(str(p), "claude-opus-5-5", now=t0 + 23 * 60) == "cache warm 37m"
+    i, _, _ = prices.price("claude-opus-5-5")
+    assert cache_state(str(p), "claude-opus-5-5", now=t0 + 3601) == f"cache cold: next call re-writes ${401_000 * i * 2:.2f}"
+
+
+def test_diet_counts_short_command_names_as_use():
+    comps = [diet.Component("skill", "commit-commands:commit", "commit-commands", 30.0),
+             diet.Component("skill", "frontend-design:frontend-design", "frontend-design", 40.0)]
+    plan = diet.plan(comps, Counter({"skill:commit": 2, "skill:frontend-design": 1}), calls=100, sessions=2)
+    assert plan == []   # used under their short names: nothing to switch off
