@@ -202,8 +202,17 @@ Claude already has.
 | context-mode | outputs over 4 KB replaced by matching chunks plus a search tool | bytes | no (recoverable by search) |
 | headroom | API proxy, JSON crushing, compress-cache-retrieve | OpenAI tokenizers | mixed |
 | token-optimizer | diff-only re-reads, archived outputs | chars / 4 | partly |
+| lean-ctx | context gateway; a stub replaces re-reads of files unchanged on disk | tiktoken o200k | for that stub, yes |
 | TOON | compact data format | o200k | yes |
 | **lowtoken** | rent accounting + verified folding + transcript-checked dedup | **Claude's tokenizer, exact** | **yes, checked on every call** |
+
+Re-read deduplication as such is not new: Claude Code itself, lean-ctx and token-optimizer all shorten
+the re-read of a file that did not change. What lowtoken adds, as far as a code search of GitHub and a
+source read of about 30 tools could find, is: references checked against the transcript (what Claude
+actually received, not what the tool produced); re-reads of *changed* files trimmed so every shown
+line keeps its true number, across several earlier reads; line-level references across tools (a
+`cat` or `sed` of text an earlier Read showed); folds that are decoded and compared before use; per-item
+rent accounting with the Lindy effect; and exact Claude token counts through `/context`.
 
 kompressor's own 89-task A/B on Claude Code is worth knowing: its recoverable mode solved the same
 tasks but cost 9% more per trial, because fetching dropped text back takes extra turns, and cache
