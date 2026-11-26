@@ -280,3 +280,24 @@ def test_bad_input_never_breaks_the_tool_call():
                     b'{"tool_name":"Bash","transcript_path":"/nonexistent","tool_response":{"stdout":7}}']:
         p = subprocess.run([sys.executable, "-m", "lowtoken", "hook", "post"], input=payload, capture_output=True)
         assert p.returncode == 0 and p.stdout == b""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership and symlink checks")
+def test_state_dir_refuses_a_symlink_and_tightens_permissions(tmp_path, monkeypatch):
+    real = tmp_path / "real"
+    real.mkdir(mode=0o755)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    monkeypatch.setenv("LOWTOKEN_HOME", str(link))
+    assert dedup.state_dir() is None                    # a planted symlink is never followed
+    monkeypatch.setenv("LOWTOKEN_HOME", str(real))
+    assert dedup.state_dir() == str(real)
+    assert (os.stat(real).st_mode & 0o777) == 0o700    # others lose access
+
+
+def test_no_safe_state_dir_means_codec_only(monkeypatch):
+    monkeypatch.setattr(dedup, "state_dir", lambda: None)
+    body = "\n".join(["warn: retrying connection"] * 50)
+    out = hook.post({"session_id": "x", "tool_name": "Bash", "tool_input": {"command": "x"},
+                     "tool_response": {"stdout": body, "stderr": ""}})
+    assert out["hookSpecificOutput"]["updatedToolOutput"]["stdout"].startswith("[lowtoken: 50 lines;")

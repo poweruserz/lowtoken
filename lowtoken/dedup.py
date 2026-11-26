@@ -104,22 +104,49 @@ class Run:
         self.start, self.length, self.src, self.src_start, self.numbered = start, length, src, src_start, numbered
 
 
-def tmpdir() -> str:
-    return os.environ.get("LOWTOKEN_HOME") or os.path.join(
-        os.environ.get("TMPDIR") or os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp", "lowtoken")
+def state_dir() -> str | None:
+    """A private per-user directory for session stores, or None when it is not safe to use.
+
+    Never a shared temp dir: another local user could pre-create it to feed the hook false
+    "Claude has seen this" state, or plant symlinks at predictable file names."""
+    d = os.environ.get("LOWTOKEN_HOME")
+    if not d:
+        if os.name == "nt":
+            d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "lowtoken")
+        else:
+            d = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "lowtoken")
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        if os.name != "nt":  # on Windows the per-user profile's ACLs already keep others out
+            import stat
+            st = os.lstat(d)
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+                return None
+            if st.st_mode & 0o077:
+                os.chmod(d, 0o700)
+    except OSError:
+        return None
+    return d
+
+
+def _create(path: str):
+    """Open a new file exclusively, never through a symlink."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    return os.open(path, flags, 0o600)
 
 
 class Store:
     def __init__(self, session_id: str, root: str | None = None, load: bool = True):
-        root = root or tmpdir()
-        os.makedirs(root, exist_ok=True)
+        root = root or state_dir()
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id or "default")
-        self.path = os.path.join(root, f"{safe}.json")
+        self.path = os.path.join(root, f"{safe}.json") if root else ""  # "" = no safe place: dedup stays off
         self._blank()
         if load:
             self.load()
 
     def load(self) -> None:
+        if not self.path:
+            return
         try:
             with open(self.path, encoding="utf-8") as fh:
                 d = json.load(fh)
@@ -146,11 +173,13 @@ class Store:
 
         A lock older than 30 s is from a hook that was killed and is taken over."""
         import time
+        if not self.path:
+            return False
         lk = self.path + ".lock"
         end = time.time() + wait
         while True:
             try:
-                os.close(os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                os.close(_create(lk))
                 self._locked = lk
                 return True
             except FileExistsError:
@@ -191,8 +220,10 @@ class Store:
                 del self.files[path]
         if len(self.pending) > 200:
             self.pending = dict(list(self.pending.items())[-200:])
-        tmp = f"{self.path}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
+        if not self.path:
+            return
+        tmp = f"{self.path}.{os.urandom(6).hex()}.tmp"
+        with os.fdopen(_create(tmp), "w", encoding="utf-8") as fh:
             json.dump({"n": self.n, "sources": self.sources, "elided": self.elided[-200:], "offset": self.offset,
                        "pending": self.pending, "seq": self.seq, "files": self.files, "saved": self.saved,
                        "ctx": self.ctx}, fh)

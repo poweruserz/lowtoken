@@ -304,7 +304,10 @@ Status line, in `~/.claude/settings.json`:
 
 ## Privacy
 
-Everything runs locally. Transcripts are read, never uploaded. The exact counter sends your text to
+Everything runs locally. Transcripts are read, never uploaded. The hook keeps its per-session state in
+`~/.cache/lowtoken` (Windows: `%LOCALAPPDATA%\lowtoken`), a directory only your user can open; it
+refuses to use a directory that is a symlink or owned by someone else, and then runs without
+deduplication rather than trust state another account could have written. The exact counter sends your text to
 Anthropic through your own Claude Code, exactly as `/context` does. The benchmarks print aggregates only.
 
 ## Reproduce

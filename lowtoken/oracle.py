@@ -40,7 +40,7 @@ def _parse(result: str) -> dict[str, int]:
         tok = m.group("tok")
         if tok.endswith("k"):
             continue  # rounded, unusable
-        out[os.path.basename(m.group("path").strip())] = int(tok)
+        out[re.split(r"[\\/]", m.group("path").strip())[-1]] = int(tok)  # either separator, on any OS
     return out
 
 
