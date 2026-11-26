@@ -131,11 +131,14 @@ both pieces), `sed` after Read, a big JSON file, a log full of repeated lines, `
 
 | Model | Without lowtoken | With lowtoken | Cost with lowtoken |
 |---|---|---|---|
-| Claude Haiku 5.5, 4 trials, 100 questions | 91/100 | **100/100** | **-8%** |
-| Claude Sonnet 5.5, 2 trials, 50 questions | 50/50 | **50/50** | **-12%** |
+| Claude Haiku 5.5, 10 trials, 250 questions per arm | 229/250 (91.6%) | **250/250 (100%)** | **-10%** |
+| Claude Sonnet 5.5, 4 trials, 100 questions per arm | 99/100 | **100/100** | **-12%** |
 
-Earlier runs agree: Haiku 90/100 vs 100/100 (5 trials) and 54/60 vs 60/60 (3 trials); Sonnet 39/40 vs
-40/40. No answer was lost in any scenario on any model in any run. Where the plain arm failed
+On Haiku the gap is not luck: 21 errors against 0, Fisher's exact test p = 3e-7. With 0 errors in 250,
+the 95% upper bound on lowtoken's error rate there is 1.2%. On Sonnet both arms are near perfect and
+the difference is not significant (p = 0.5): lowtoken costs less and loses nothing. Earlier, smaller
+runs agree (Haiku 91/100 vs 100/100, 90/100 vs 100/100, 54/60 vs 60/60; Sonnet 50/50 vs 50/50, 39/40
+vs 40/40). No answer was lost in any scenario on any model in any run. Where the plain arm failed
 (counting repeated log lines), the folded form is not just shorter but easier: the model no longer
 counts 31 identical lines by eye. Without lowtoken, Haiku answered 32 or 33 retries and 183 to 212
 lines, and Sonnet once said 190; with lowtoken, 31 and 187, every time.
