@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 from . import codec, cost, dedup
@@ -118,14 +119,20 @@ def _text(name: str, resp) -> str:
 def post(d: dict) -> dict | None:
     name = d.get("tool_name") or ""
     resp = d.get("tool_response")
-    # A subagent reports its parent's session_id but has its own context: never dedup against
-    # what the parent saw. Without the lock (a parallel call holds it) dedup is skipped too.
-    store = dedup.Store(d.get("session_id") or "default", load=False)
-    locked = not d.get("agent_id") and store.lock()
+    # A subagent reports its parent's session_id but has its own context: it dedups only against its
+    # own transcript, which Claude Code keeps next to the parent's. Without the lock (a parallel call
+    # holds it) dedup is skipped.
+    sid, agent, transcript = d.get("session_id") or "default", d.get("agent_id"), d.get("transcript_path")
+    if agent:
+        ok = transcript and re.fullmatch(r"[\w-]{1,128}", str(agent)) and re.fullmatch(r"[\w-]{1,128}", sid)
+        transcript = os.path.join(os.path.dirname(transcript), sid, "subagents", f"agent-{agent}.jsonl") if ok else None
+        sid = f"{sid}--{agent}"
+    store = dedup.Store(sid, load=False)
+    locked = bool(transcript) and store.lock()
     try:
         if locked:
             store.load()
-        s = store if locked and store.sync(d.get("transcript_path")) else None
+        s = store if locked and store.sync(transcript, agent) else None
         result = _rewrite(name, resp, s)
         if result and locked:
             new = next(iter(result.values()))

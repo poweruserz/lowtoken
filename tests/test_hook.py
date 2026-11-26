@@ -301,3 +301,53 @@ def test_no_safe_state_dir_means_codec_only(monkeypatch):
     out = hook.post({"session_id": "x", "tool_name": "Bash", "tool_input": {"command": "x"},
                      "tool_response": {"stdout": body, "stderr": ""}})
     assert out["hookSpecificOutput"]["updatedToolOutput"]["stdout"].startswith("[lowtoken: 50 lines;")
+
+
+class Subagent(Session):
+    """A subagent of `parent`: its own transcript next to the parent's, its lines marked with agentId."""
+
+    def __init__(self, parent, agent="a1b2c3"):
+        self.sid, self.agent, self.parent_transcript = parent.sid, agent, parent.transcript
+        d = os.path.join(os.path.dirname(parent.transcript), parent.sid, "subagents")
+        os.makedirs(d, exist_ok=True)
+        self.transcript = os.path.join(d, f"agent-{agent}.jsonl")
+        open(self.transcript, "w").close()
+
+    def _append(self, d):
+        d.update(isSidechain=True, agentId=self.agent, cwd="C:/p")
+        with open(self.transcript, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(d) + "\n")
+
+    def call(self, name, inp, resp, shown_override=None):
+        tid = "toolu_" + uuid.uuid4().hex[:12]
+        self._append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": tid, "name": name, "input": inp}]}})
+        out = hook.post({"session_id": self.sid, "agent_id": self.agent, "transcript_path": self.parent_transcript,
+                         "tool_use_id": tid, "tool_name": name, "tool_input": inp, "tool_response": resp})
+        new = resp if not out else out["hookSpecificOutput"]["updatedToolOutput"]
+        self._append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": tid, "content": shown_override or visible(name, new)}]}})
+        return out, new
+
+
+def test_subagent_dedups_against_its_own_reads_only(s):
+    v1 = _file()
+    s.call("Read", {"file_path": "C:/p/app.py"}, read_resp(v1))          # the parent's read
+    sub = Subagent(s)
+    out, _ = sub.call("Read", {"file_path": "C:/p/app.py"}, read_resp(v1))
+    assert out is None                                                    # the subagent never saw it
+    v2 = v1[:]
+    v2[150] = "def function_number_151(argument): return compute_value(151) * 3"
+    out, new = sub.call("Read", {"file_path": "C:/p/app.py"}, read_resp(v2))
+    assert out is not None and MARK.match(new["file"]["content"])         # its own first read is cited
+    assert "Read #1 of app.py" in new["file"]["content"].split("\n")[0]
+    assert_true_numbers(new, v2)
+    out, _ = s.call("Read", {"file_path": "C:/p/app.py"}, read_resp(v2))  # the parent still cites only its own
+    assert out is None or "Read #1 of app.py" in out["hookSpecificOutput"]["updatedToolOutput"]["file"]["content"]
+
+
+def test_subagent_with_a_hostile_agent_id_gets_no_dedup(s, tmp_path):
+    out = hook.post({"session_id": s.sid, "agent_id": "../../x", "transcript_path": s.transcript, "tool_name": "Bash",
+                     "tool_input": {"command": "x"}, "tool_response": {"stdout": "\n".join(_file(5)), "stderr": ""}})
+    assert out is None
+    assert not any(n.startswith("..") for n in os.listdir(tmp_path))

@@ -101,6 +101,7 @@ def replay(path: str, root: str) -> list[dict]:
     sid = "replay-" + re.sub(r"\W", "_", path)[-80:]
     synth = os.path.join(root, sid + ".jsonl")
     store = dedup.Store(sid, None)
+    own_sidechain = "subagents" in path.replace("\\", "/").split("/")  # a subagent's own transcript
     store._blank()
     store.save()
     id2: dict[str, tuple[str, dict]] = {}
@@ -108,6 +109,8 @@ def replay(path: str, root: str) -> list[dict]:
     rows = []
     with open(path, encoding="utf-8", errors="replace") as fh, open(synth, "w", encoding="utf-8") as tw:
         def emit(obj):
+            if own_sidechain:   # the live hook reads a subagent's own lines from its own transcript
+                obj = {k: v for k, v in obj.items() if k != "isSidechain"}
             tw.write(json.dumps(obj) + "\n")
             tw.flush()
 
@@ -116,7 +119,7 @@ def replay(path: str, root: str) -> list[dict]:
                 d = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(d, dict) or d.get("isSidechain"):
+            if not isinstance(d, dict) or (d.get("isSidechain") and not own_sidechain):
                 continue
             t = d.get("type")
             m = d.get("message") or {}
@@ -196,8 +199,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--exact-sample", type=int, default=0, help="re-measure N rewritten outputs with the exact oracle")
     ap.add_argument("--exclude", action="append", help="skip transcripts whose path contains this text")
+    ap.add_argument("--subagents", action="store_true", help="replay subagent transcripts (each against its own lines)")
     a = ap.parse_args()
     paths = rent.transcripts(days=a.days or None, exclude=a.exclude)
+    paths = [p for p in paths if ("subagents" in p.replace("\\", "/").split("/")) == a.subagents]
     random.Random(0).shuffle(paths)
     if a.limit:
         paths = paths[:a.limit]

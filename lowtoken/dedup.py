@@ -230,8 +230,10 @@ class Store:
         os.replace(tmp, self.path)
 
     # ---------------------------------------------------------------- sync --
-    def sync(self, transcript: str | None) -> bool:
-        """Read new transcript lines; False when there is no transcript to trust."""
+    def sync(self, transcript: str | None, agent: str | None = None) -> bool:
+        """Read new transcript lines; False when there is no transcript to trust.
+
+        With `agent`, only that subagent's own lines count: it starts with an empty context."""
         if not transcript or not os.path.isfile(transcript):
             return False
         size = os.path.getsize(transcript)
@@ -249,7 +251,7 @@ class Store:
                 d = json.loads(raw)
             except ValueError:
                 continue
-            if isinstance(d, dict) and not d.get("isSidechain"):
+            if isinstance(d, dict) and (d.get("agentId") == agent if agent else not d.get("isSidechain")):
                 self._event(d)
         return True
 

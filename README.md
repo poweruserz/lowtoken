@@ -141,7 +141,11 @@ Three transforms, each checked on every call:
    * **Text counts as "in context" until the context shrinks.** Every API call's context size is in
      the transcript. On 40,706 consecutive calls it shrank only on compaction, never by silent
      clearing; any drop at all resets what lowtoken may point at.
-   * **Subagents are left alone.** They report their parent's session id but have their own context.
+   * **A subagent only gets pointed at its own text.** It reports its parent's session id but starts with an
+     empty context, so lowtoken reads the subagent's own transcript (Claude Code keeps it next to the
+     parent's) and counts only lines carrying that subagent's id. Checked live: a subagent that read a
+     file, edited one line and read it again got `[lowtoken: lines 1-89 unchanged since Read #1 of app.py]`
+     and answered questions about the folded lines correctly; the parent's reads never reach it.
    * If Claude asks for the same output again, it gets it whole: no loop where a model keeps
      re-requesting text it cannot find.
 
@@ -208,6 +212,10 @@ writing a synthetic transcript of what Claude would have seen, and checks every 
 | PowerShell | 6,008 | 2.7% |
 | Read | 6,359 | 2.1% |
 | all | 36,965 | 3.5% |
+
+Subagents, replayed the same way against their own transcripts: 8,194 tool results, 1.5% saved
+(they are short and repeat less), 6,357 omitted lines and 4,048 Read line numbers checked, **0 failures**;
+exactly counted, the 150 sampled rewritten outputs went down 12.8%.
 
 Honest scale: most tool output is unique text, so lossless rewriting saves a few percent overall,
 and about a quarter of each output it does touch. For most users the larger wins are in `audit` and `diet`.
