@@ -188,6 +188,15 @@ writing a synthetic transcript of what Claude would have seen, and checks every 
 Honest scale: most tool output is unique text, so lossless rewriting saves a few percent overall,
 and about a quarter of each output it does touch. For most users the larger wins are in `audit` and `diet`.
 
+Is there more to take from Read without losing anything? Measured at the hook, on 3,835 real Reads:
+trimming leaves only 0.09% of Read tokens on the table (runs too short to pay for a marker). The rest
+of a Read is text Claude has not seen at those line numbers, which only a lossy tool would drop.
+
+Installed from the marketplace into a real Claude Code setup with ten other plugins (one of which
+also rewrites tool output), the hook folded a test log and tabled a JSON file in a live session, and
+Claude answered every question about them correctly, noting on its own that a layer had reformatted
+the output.
+
 ## How it compares
 
 Read from each project's source code (November 2026). Most tools in this space trade some output
